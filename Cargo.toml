@@ -1,0 +1,3 @@
+[package]
+name = "llm"
+edition = "2024"
