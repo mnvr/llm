@@ -1,4 +1,8 @@
+mod json;
+
 use std::time::Instant;
+
+use json::Json;
 
 struct Mat {
     rows: usize,
@@ -74,4 +78,16 @@ fn main() {
     let c2 = bench("ikj", &a, &b, Mat::matmul_ikj);
     assert_eq!(c1.data, c2.data);
     println!("ijk and ikj agree bit for bit (n = {})", n);
+
+    let doc = Json::Object(vec![
+        ("model_type".to_string(), Json::String("qwen3".to_string())),
+        ("hidden_size".to_string(), Json::Number(2560.0)),
+        ("tie_word_embeddings".to_string(), Json::Bool(true)),
+        ("rope_scaling".to_string(), Json::Null),
+        ("sizes".to_string(), Json::Array(vec![
+            Json::Number(0.6), Json::Number(1.7), Json::Number(4.0),
+        ]))
+    ]);
+    println!("{doc}");
+    println!("size of Json = {}", std::mem::size_of::<Json>());
 }
