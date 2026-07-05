@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hand_check() {
+    fn matmul_matches_hand_computed() {
         let a = Mat::from_fn(2, 3, |i, j| (i * 3 + j + 1) as f32);
         let b = Mat::from_fn(3, 2, |i, j| (i * 2 + j + 7) as f32);
         assert_eq!(a.matmul(&b).data, [58.0, 64.0, 139.0, 154.0]);
