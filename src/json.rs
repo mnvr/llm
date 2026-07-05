@@ -107,6 +107,7 @@ impl Parser<'_> {
                 Ok(Json::Bool(false))
             }
             Some(b'-' | b'0'..=b'9') => self.number(),
+            Some(b'"') => self.string().map(Json::String),
             _ => Err(self.err("a JSON value")),
         }
     }
@@ -147,9 +148,93 @@ impl Parser<'_> {
         let s = str::from_utf8(&self.bytes[start..self.pos]).unwrap();
         let n: f64 = s.parse().unwrap();
         if !n.is_finite() {
-            return Err(ParseError { pos: start, msg: "a representable number" });
+            return Err(ParseError {
+                pos: start,
+                msg: "a representable number",
+            });
         }
         Ok(Json::Number(n))
+    }
+
+    fn string(&mut self) -> Result<String, ParseError> {
+        self.expect("\"")?;
+        let mut out = String::new();
+        let mut run = self.pos;
+        loop {
+            let Some(b) = self.peek() else {
+                return Err(self.err("a closing quote"));
+            };
+            match b {
+                b'"' | b'\\' => {
+                    out.push_str(str::from_utf8(&self.bytes[run..self.pos]).unwrap());
+                    self.pos += 1;
+                    if b == b'"' {
+                        return Ok(out);
+                    }
+                    out.push(self.escape()?);
+                    run = self.pos;
+                }
+                0x00..=0x1f => return Err(self.err("an escaped control character")),
+                _ => self.pos += 1,
+            }
+        }
+    }
+
+    fn escape(&mut self) -> Result<char, ParseError> {
+        let c = match self.peek() {
+            Some(b'"') => '"',
+            Some(b'\\') => '\\',
+            Some(b'/') => '/',
+            Some(b'b') => '\u{8}',
+            Some(b'f') => '\u{c}',
+            Some(b'n') => '\n',
+            Some(b'r') => '\r',
+            Some(b't') => '\t',
+            Some(b'u') => {
+                self.pos += 1;
+                return self.unicode_escape();
+            }
+            _ => return Err(self.err("an escape character")),
+        };
+        self.pos += 1;
+        Ok(c)
+    }
+
+    fn unicode_escape(&mut self) -> Result<char, ParseError> {
+        let start = self.pos;
+        let hi = self.hex4()?;
+        let code = if (0xD800..=0xDBFF).contains(&hi) {
+            self.expect("\\u")?;
+            let lo = self.hex4()?;
+            if !(0xDC00..=0xDFFF).contains(&lo) {
+                return Err(ParseError {
+                    pos: start,
+                    msg: "a low surrogate",
+                });
+            }
+            0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+        } else {
+            hi
+        };
+        char::from_u32(code).ok_or(ParseError {
+            pos: start,
+            msg: "a Unicode scalar value",
+        })
+    }
+
+    fn hex4(&mut self) -> Result<u32, ParseError> {
+        let mut v = 0;
+        for _ in 0..4 {
+            let d = match self.peek() {
+                Some(b @ b'0'..=b'9') => u32::from(b - b'0'),
+                Some(b @ b'a'..=b'f') => u32::from(b - b'a' + 10),
+                Some(b @ b'A'..=b'F') => u32::from(b - b'A' + 10),
+                _ => return Err(self.err("a hex digit")),
+            };
+            self.pos += 1;
+            v = v << 4 | d;
+        }
+        Ok(v)
     }
 }
 
@@ -209,7 +294,9 @@ mod tests {
 
     #[test]
     fn parse_reports_error_position_and_msg() {
-        let Err(e) = parse("truefalse") else { panic!("expected error") };
+        let Err(e) = parse("truefalse") else {
+            panic!("expected error")
+        };
         assert_eq!(e.pos, 4);
         assert_eq!(e.msg, "end of input")
     }
@@ -232,6 +319,39 @@ mod tests {
     #[test]
     fn parse_rejects_malformed_numbers() {
         for s in ["01", ".5", "-", "1.", "1e", "+1", "1e+", "0x10", "1e309"] {
+            assert!(parse(s).is_err(), "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_accepts_strings() {
+        for (input, expected) in [
+            (r#""hello""#, "hello"),
+            (r#""""#, ""),
+            (r#""a\"b\\c\/d""#, "a\"b\\c/d"),
+            (r#""tab\there""#, "tab\there"),
+            (r#""\u0041""#, "A"),
+            (r#""caf\u00e9""#, "café"),
+            (r#""\ud83d\ude00""#, "😀"),
+            (r#""直接""#, "直接"),
+        ] {
+            let Json::String(s) = parse(input).unwrap() else {
+                panic!("{input}")
+            };
+            assert_eq!(s, expected);
+        }
+    }
+
+    #[test]
+    fn parse_rejects_malformed_strings() {
+        for s in [
+            r#"""#,
+            r#""\x""#,
+            r#""\u12""#,
+            r#""\ud800""#,
+            r#""\ud8000\u0041""#,
+            "\"\n\"",
+        ] {
             assert!(parse(s).is_err(), "{s}");
         }
     }
