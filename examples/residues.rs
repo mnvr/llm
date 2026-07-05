@@ -8,6 +8,9 @@ fn distinct_residues(b: usize, m: usize) -> usize {
 
 fn main() {
     for (b, m) in [(13, 101), (7, 101), (10, 100), (12, 100), (13, 100)] {
-        println!("j -> {b:2}*j mod {m:3}: {:3} of {m} residues hit", distinct_residues(b, m));
+        println!(
+            "j -> {b:2}*j mod {m:3}: {:3} of {m} residues hit",
+            distinct_residues(b, m)
+        );
     }
 }

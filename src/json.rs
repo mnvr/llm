@@ -56,3 +56,30 @@ fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
     }
     write!(f, "\"")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_check() {
+        let doc = Json::Object(vec![
+            ("model_type".to_string(), Json::String("qwen3".to_string())),
+            ("hidden_size".to_string(), Json::Number(2560.0)),
+            ("tie_word_embeddings".to_string(), Json::Bool(true)),
+            ("rope_scaling".to_string(), Json::Null),
+            (
+                "sizes".to_string(),
+                Json::Array(vec![
+                    Json::Number(0.6),
+                    Json::Number(1.7),
+                    Json::Number(4.0),
+                ]),
+            ),
+        ]);
+        assert_eq!(
+            format!("{doc}"),
+            r#"{"model_type":"qwen3","hidden_size":2560,"tie_word_embeddings":true,"rope_scaling":null,"sizes":[0.6,1.7,4]}"#
+        );
+    }
+}
