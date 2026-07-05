@@ -106,8 +106,50 @@ impl Parser<'_> {
                 self.expect("false")?;
                 Ok(Json::Bool(false))
             }
+            Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err(self.err("a JSON value")),
         }
+    }
+
+    fn digits(&mut self) -> Result<(), ParseError> {
+        let start = self.pos;
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            Err(self.err("a digit"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn number(&mut self) -> Result<Json, ParseError> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        if self.peek() == Some(b'0') {
+            self.pos += 1;
+        } else {
+            self.digits()?;
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            self.digits()?;
+        }
+        if let Some(b'e' | b'E') = self.peek() {
+            self.pos += 1;
+            if let Some(b'+' | b'-') = self.peek() {
+                self.pos += 1;
+            }
+            self.digits()?;
+        }
+        let s = str::from_utf8(&self.bytes[start..self.pos]).unwrap();
+        let n: f64 = s.parse().unwrap();
+        if !n.is_finite() {
+            return Err(ParseError { pos: start, msg: "a representable number" });
+        }
+        Ok(Json::Number(n))
     }
 }
 
@@ -167,13 +209,30 @@ mod tests {
 
     #[test]
     fn parse_reports_error_position_and_msg() {
-        let e = parse("truefalse");
-        match e {
-            Err(ParseError { pos, msg }) => {
-                assert_eq!(pos, 4);
-                assert_eq!(msg, "end of input")
-            }
-            _ => assert!(false),
+        let Err(e) = parse("truefalse") else { panic!("expected error") };
+        assert_eq!(e.pos, 4);
+        assert_eq!(e.msg, "end of input")
+    }
+
+    #[test]
+    fn parse_accepts_numbers() {
+        for (input, expected) in [
+            ("0", "0"),
+            ("-0", "-0"),
+            ("2560", "2560"),
+            ("0.6", "0.6"),
+            ("1e-06", "0.000001"),
+            ("5000000.0", "5000000"),
+            ("-12.5e3", "-12500"),
+        ] {
+            assert_eq!(parse(input).unwrap().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn parse_rejects_malformed_numbers() {
+        for s in ["01", ".5", "-", "1.", "1e", "+1", "1e+", "0x10", "1e309"] {
+            assert!(parse(s).is_err(), "{s}");
         }
     }
 }
