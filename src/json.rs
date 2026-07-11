@@ -108,6 +108,8 @@ impl Parser<'_> {
             }
             Some(b'-' | b'0'..=b'9') => self.number(),
             Some(b'"') => self.string().map(Json::String),
+            Some(b'[') => self.array(),
+            Some(b'{') => self.object(),
             _ => Err(self.err("a JSON value")),
         }
     }
@@ -236,6 +238,57 @@ impl Parser<'_> {
         }
         Ok(v)
     }
+
+    fn array(&mut self) -> Result<Json, ParseError> {
+        self.pos += 1;
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Ok(Json::Array(items));
+        }
+        loop {
+            self.skip_ws();
+            items.push(self.value()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(Json::Array(items));
+                }
+                _ => return Err(self.err("',' or ']'")),
+            }
+        }
+    }
+
+    fn object(&mut self) -> Result<Json, ParseError> {
+        self.pos += 1;
+        let mut members = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Ok(Json::Object(members));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.string()?;
+            self.skip_ws();
+            self.expect(":")?;
+            self.skip_ws();
+            let value = self.value()?;
+            members.push((key, value));
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(Json::Object(members));
+                }
+                _ => return Err(self.err("',' or '}'")),
+            }
+        }
+    }
 }
 
 pub fn parse(s: &str) -> Result<Json, ParseError> {
@@ -351,6 +404,39 @@ mod tests {
             r#""\ud800""#,
             r#""\ud8000\u0041""#,
             "\"\n\"",
+        ] {
+            assert!(parse(s).is_err(), "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_accepts_containers() {
+        for (input, expected) in [
+            ("[]", "[]"),
+            ("{}", "{}"),
+            ("[ 1 , true , \"x\" ]", r#"[1,true,"x"]"#),
+            (
+                r#"{ "a" : [1, {"b": null}] , "c" : -2.5e3 }"#,
+                r#"{"a":[1,{"b":null}],"c":-2500}"#,
+            ),
+        ] {
+            assert_eq!(parse(input).unwrap().to_string(), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_malformed_containers() {
+        for s in [
+            "[",
+            "]",
+            "[1,]",
+            "[1 2]",
+            "[[]",
+            "{",
+            r#"{"a"}"#,
+            r#"{"a":}"#,
+            r#"{"a":1,}"#,
+            r#"{a:1}"#,
         ] {
             assert!(parse(s).is_err(), "{s}");
         }
