@@ -305,6 +305,50 @@ pub fn parse(s: &str) -> Result<Json, ParseError> {
     Ok(value)
 }
 
+impl Json {
+    pub fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Object(members) => members.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Json::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Json::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Json::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&[Json]> {
+        match self {
+            Json::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&[(String, Json)]> {
+        match self {
+            Json::Object(members) => Some(members),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

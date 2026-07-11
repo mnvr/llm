@@ -14,5 +14,8 @@ fn main() {
     let t = Instant::now();
     drop(doc);
     let dt_drop = t.elapsed().as_secs_f64();
-    println!("tokenizer.json ({} bytes): read {dt_read:.3}s parse {dt_parse:.3}s drop {dt_drop:.3}s", text.len());
+    println!(
+        "tokenizer.json ({} bytes): read {dt_read:.3}s parse {dt_parse:.3}s drop {dt_drop:.3}s",
+        text.len()
+    );
 }
