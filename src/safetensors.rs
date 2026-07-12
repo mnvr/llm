@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
 
 use crate::json::{self, Json};
 
@@ -24,117 +22,117 @@ struct TensorInfo {
 }
 
 #[derive(Debug)]
-pub enum LoadError {
-    Io { path: String, source: io::Error },
-    Utf8(std::str::Utf8Error),
-    Json(json::ParseError),
-    Format(String),
+pub struct LoadError {
+    path: String,
+    msg: String,
+    source: Option<Box<dyn std::error::Error + 'static>>,
 }
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.msg)
+    }
+}
+
+impl std::error::Error for LoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref()
+    }
+}
+
+#[derive(Debug)]
+enum ParseError {
+    Format(&'static str),
+    Utf8(std::str::Utf8Error),
+    Json(json::ParseError),
+    Entry(String, &'static str),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::Io { path, .. } => write!(f, "could not read {path}"),
-            LoadError::Utf8(_) => write!(f, "header is not utf-8"),
-            LoadError::Json(_) => write!(f, "header is not json"),
-            LoadError::Format(msg) => write!(f, "{msg}"),
+            ParseError::Format(msg) => write!(f, "{msg}"),
+            ParseError::Utf8(_) => write!(f, "header is not utf-8"),
+            ParseError::Json(_) => write!(f, "header is not json"),
+            ParseError::Entry(name, msg) => write!(f, "{name}: {msg}"),
         }
-    }
-}
-
-impl Error for LoadError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            LoadError::Io { source, .. } => Some(source),
-            LoadError::Utf8(e) => Some(e),
-            LoadError::Json(e) => Some(e),
-            LoadError::Format(_) => None,
-        }
-    }
-}
-
-impl From<std::str::Utf8Error> for LoadError {
-    fn from(e: std::str::Utf8Error) -> LoadError {
-        LoadError::Utf8(e)
-    }
-}
-
-impl From<json::ParseError> for LoadError {
-    fn from(e: json::ParseError) -> LoadError {
-        LoadError::Json(e)
     }
 }
 
 impl Shard {
     pub fn load(path: &str) -> Result<Shard, LoadError> {
-        let bytes = fs::read(path).map_err(|e| LoadError::Io {
+        let bytes = fs::read(path).map_err(|e| LoadError {
             path: path.to_string(),
-            source: e,
+            msg: "could not open file".to_string(),
+            source: Some(Box::new(e)),
         })?;
-        Shard::parse(bytes)
+        Shard::parse(bytes).map_err(|e| LoadError {
+            path: path.to_string(),
+            msg: e.to_string(),
+            source: match e {
+                ParseError::Utf8(e) => Some(Box::new(e)),
+                ParseError::Json(e) => Some(Box::new(e)),
+                _ => None,
+            },
+        })
     }
 
-    fn parse(bytes: Vec<u8>) -> Result<Shard, LoadError> {
+    fn parse(bytes: Vec<u8>) -> Result<Shard, ParseError> {
+        use ParseError as E;
         let head = bytes
             .first_chunk::<8>()
-            .ok_or_else(|| LoadError::Format("file too short".to_string()))?;
-        let header_len = usize::try_from(u64::from_le_bytes(*head)).unwrap();
-        ensure(header_len <= bytes.len() - 8, || {
-            "header extends past end of file".to_string()
-        })?;
-        let data_start = 8 + header_len;
-        let text = str::from_utf8(&bytes[8..data_start])?;
-        let header = json::parse(text)?;
+            .ok_or(E::Format("file too short"))?;
+        let header_len = u64::from_le_bytes(*head);
+        if header_len > (bytes.len() - 8) as u64 {
+            return Err(E::Format("header extends past end of file"));
+        }
+        let data_start = 8 + usize::try_from(header_len).unwrap();
+        let text = str::from_utf8(&bytes[8..data_start]).map_err(E::Utf8)?;
+        let header = json::parse(text).map_err(E::Json)?;
         let entries = header
             .as_object()
-            .ok_or_else(|| LoadError::Format("header should be an object".to_string()))?;
+            .ok_or(E::Format("header should be an object"))?;
         let mut tensors = BTreeMap::new();
         for (name, entry) in entries {
             if name == "__metadata__" {
                 continue;
             }
             let dtype = entry.get("dtype").and_then(Json::as_str);
-            ensure(dtype == Some("BF16"), || {
-                format!("{name}: dtype should be BF16, not {dtype:?}")
-            })?;
+            if dtype != Some("BF16") {
+                return Err(E::Entry(name.clone(), "dtype should be BF16"));
+            }
             let shape: Vec<usize> = entry
                 .get("shape")
                 .and_then(Json::as_array)
-                .ok_or_else(|| LoadError::Format(format!("{name}: shape should be an array")))?
+                .ok_or_else(|| E::Entry(name.clone(), "shape should be an array"))?
                 .iter()
                 .map(|dim| {
-                    dim.as_usize().ok_or_else(|| {
-                        LoadError::Format(format!("{name}: shape should be integers"))
-                    })
+                    dim.as_usize()
+                        .ok_or_else(|| E::Entry(name.clone(), "shape should be integers"))
                 })
-                .collect::<Result<Vec<usize>, LoadError>>()?;
+                .collect::<Result<Vec<usize>, ParseError>>()?;
             let offsets = entry
                 .get("data_offsets")
                 .and_then(Json::as_array)
-                .ok_or_else(|| {
-                    LoadError::Format(format!("{name}: data_offsets should be an array"))
-                })?;
+                .ok_or_else(|| E::Entry(name.clone(), "data_offsets should be an array"))?;
             let [start, end] = offsets else {
-                return Err(LoadError::Format(format!(
-                    "{name}: data_offsets should be a pair"
-                )));
+                return Err(E::Entry(name.clone(), "data_offsets should be a pair"));
             };
             let start = start
                 .as_usize()
-                .ok_or_else(|| LoadError::Format(format!("{name}: start should be an integer")))?;
+                .ok_or_else(|| E::Entry(name.clone(), "start should be an integer"))?;
             let end = end
                 .as_usize()
-                .ok_or_else(|| LoadError::Format(format!("{name}: end should be an integer")))?;
-            ensure(start <= end && end <= bytes.len() - data_start, || {
-                format!("{name}: data_offsets should be in bounds")
-            })?;
+                .ok_or_else(|| E::Entry(name.clone(), "end should be an integer"))?;
+            if !(start <= end && end <= bytes.len() - data_start) {
+                return Err(E::Entry(name.clone(), "data_offsets should be in bounds"));
+            }
             let count = shape
                 .iter()
                 .try_fold(1usize, |acc, &dim| acc.checked_mul(dim));
-            ensure(
-                count.and_then(|n| n.checked_mul(2)) == Some(end - start),
-                || format!("{name}: byte size should match shape"),
-            )?;
+            if count.and_then(|n| n.checked_mul(2)) != Some(end - start) {
+                return Err(E::Entry(name.clone(), "byte size should match shape"));
+            }
             tensors.insert(name.clone(), TensorInfo { shape, start, end });
         }
         Ok(Shard {
@@ -156,14 +154,6 @@ impl Shard {
             shape: info.shape.clone(),
             data,
         })
-    }
-}
-
-fn ensure(cond: bool, msg: impl FnOnce() -> String) -> Result<(), LoadError> {
-    if cond {
-        Ok(())
-    } else {
-        Err(LoadError::Format(msg()))
     }
 }
 

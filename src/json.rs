@@ -60,8 +60,8 @@ fn write_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 
 #[derive(Debug)]
 pub struct ParseError {
-    pub pos: usize,
-    pub msg: &'static str,
+    pos: usize,
+    msg: &'static str,
 }
 
 impl fmt::Display for ParseError {

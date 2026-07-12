@@ -1,17 +1,7 @@
 use std::fmt;
+use std::fs;
 
-use crate::json::Json;
-
-#[derive(Debug)]
-pub struct Error(String);
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "config: {}", self.0)
-    }
-}
-
-impl std::error::Error for Error {}
+use crate::json::{self, Json};
 
 #[derive(Debug)]
 pub struct Config {
@@ -29,16 +19,54 @@ pub struct Config {
     pub tie_word_embeddings: bool,
 }
 
+#[derive(Debug)]
+pub struct LoadError {
+    path: String,
+    msg: String,
+    source: Option<Box<dyn std::error::Error + 'static>>,
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.msg)
+    }
+}
+
+impl std::error::Error for LoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref()
+    }
+}
+
+#[derive(Debug)]
+struct ParseError(String);
+
 impl Config {
-    pub fn from_json(json: &Json) -> Result<Config, Error> {
+    pub fn load(path: &str) -> Result<Config, LoadError> {
+        let text = fs::read_to_string(path).map_err(|e| LoadError {
+            path: path.to_string(),
+            msg: "could not read file".to_string(),
+            source: Some(Box::new(e)),
+        })?;
+        let json = json::parse(&text).map_err(|e| LoadError {
+            path: path.to_string(),
+            msg: "invalid json".to_string(),
+            source: Some(Box::new(e)),
+        })?;
+        Config::from_json(&json).map_err(|e| LoadError {
+            path: path.to_string(),
+            msg: e.0,
+            source: None,
+        })
+    }
+
+    fn from_json(json: &Json) -> Result<Config, ParseError> {
         let model_type = field(json, "model_type")?.as_str();
         if model_type != Some("qwen3") {
-            return Err(Error(format!(
-                "model_type should be qwen3, not {model_type:?}"
-            )));
+            return Err(ParseError("model_type should be qwen3".to_string()));
         }
         if !matches!(field(json, "rope_scaling")?, Json::Null) {
-            return Err(Error("rope_scaling should be null".to_string()));
+            return Err(ParseError("rope_scaling should be null".to_string()));
         }
         Ok(Config {
             hidden_size: int(json, "hidden_size")?,
@@ -50,7 +78,7 @@ impl Config {
             vocab_size: int(json, "vocab_size")?,
             max_position_embeddings: int(json, "max_position_embeddings")?,
             eos_token_id: u32::try_from(int(json, "eos_token_id")?)
-                .map_err(|_| Error("eos_token_id should fit in u32".to_string()))?,
+                .map_err(|_| ParseError("eos_token_id should fit in u32".to_string()))?,
             rope_theta: num(json, "rope_theta")?,
             rms_norm_eps: num(json, "rms_norm_eps")?,
             tie_word_embeddings: flag(json, "tie_word_embeddings")?,
@@ -58,26 +86,27 @@ impl Config {
     }
 }
 
-fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, Error> {
-    json.get(key).ok_or_else(|| Error(format!("missing {key}")))
+fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, ParseError> {
+    json.get(key)
+        .ok_or_else(|| ParseError(format!("missing {key}")))
 }
 
-fn num(json: &Json, key: &str) -> Result<f64, Error> {
+fn num(json: &Json, key: &str) -> Result<f64, ParseError> {
     field(json, key)?
         .as_f64()
-        .ok_or_else(|| Error(format!("{key} should be a number")))
+        .ok_or_else(|| ParseError(format!("{key} should be a number")))
 }
 
-fn int(json: &Json, key: &str) -> Result<usize, Error> {
+fn int(json: &Json, key: &str) -> Result<usize, ParseError> {
     field(json, key)?
         .as_usize()
-        .ok_or_else(|| Error(format!("config: {key} should be an integer")))
+        .ok_or_else(|| ParseError(format!("{key} should be an integer")))
 }
 
-fn flag(json: &Json, key: &str) -> Result<bool, Error> {
+fn flag(json: &Json, key: &str) -> Result<bool, ParseError> {
     field(json, key)?
         .as_bool()
-        .ok_or_else(|| Error(format!("config: {key} should be a bool")))
+        .ok_or_else(|| ParseError(format!("{key} should be a bool")))
 }
 
 #[cfg(test)]
@@ -96,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn from_json_reject_unknown_model() {
+    fn from_json_rejects_unknown_model() {
         let text = r#"{"model_type":"qwen2","rope_scaling":null}"#;
         let err = Config::from_json(&json::parse(text).unwrap()).unwrap_err();
         assert!(err.0.contains("model_type"));
