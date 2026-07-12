@@ -53,12 +53,9 @@ fn num(json: &Json, key: &str) -> f64 {
 }
 
 fn int(json: &Json, key: &str) -> usize {
-    let n = num(json, key);
-    assert!(
-        n >= 0.0 && n.fract() == 0.0,
-        "config: {key} should be an integer"
-    );
-    n as usize
+    field(json, key)
+        .as_usize()
+        .unwrap_or_else(|| panic!("config: {key} should be an integer"))
 }
 
 fn flag(json: &Json, key: &str) -> bool {

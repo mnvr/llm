@@ -47,7 +47,10 @@ impl Shard {
                 .and_then(Json::as_array)
                 .unwrap_or_else(|| panic!("{name}: shape should be an array"))
                 .iter()
-                .map(|dim| exact_usize(dim, "shape", name))
+                .map(|dim| {
+                    dim.as_usize()
+                        .unwrap_or_else(|| panic!("{name}: shape should be integers"))
+                })
                 .collect();
             let offsets = entry
                 .get("data_offsets")
@@ -56,8 +59,12 @@ impl Shard {
             let [start, end] = offsets else {
                 panic!("{name}: data_offsets should be a pair")
             };
-            let start = exact_usize(start, "data_offsets", name);
-            let end = exact_usize(end, "data_offsets", name);
+            let start = start
+                .as_usize()
+                .unwrap_or_else(|| panic!("{name}: start should be an integer"));
+            let end = end
+                .as_usize()
+                .unwrap_or_else(|| panic!("{name}: end should be an integer"));
             assert!(
                 start <= end && end <= bytes.len() - data_start,
                 "{name}: data_offsets should be in bounds"
@@ -92,17 +99,6 @@ impl Shard {
             data,
         }
     }
-}
-
-fn exact_usize(json: &Json, what: &str, name: &str) -> usize {
-    let n = json
-        .as_f64()
-        .unwrap_or_else(|| panic!("{name}: {what} should be numbers"));
-    assert!(
-        n >= 0.0 && n.fract() == 0.0,
-        "{name}: {what} should be integers"
-    );
-    n as usize
 }
 
 #[cfg(test)]

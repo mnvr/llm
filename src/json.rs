@@ -320,6 +320,13 @@ impl Json {
         }
     }
 
+    pub fn as_usize(&self) -> Option<usize> {
+        match self.as_f64() {
+            Some(f) if f >= 0.0 && f.fract() == 0.0 && f < usize::MAX as f64 => Some(f as usize),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Json::String(s) => Some(s),
@@ -418,6 +425,13 @@ mod tests {
         for s in ["01", ".5", "-", "1.", "1e", "+1", "1e+", "0x10", "1e309"] {
             assert!(parse(s).is_err(), "{s}");
         }
+    }
+
+    #[test]
+    fn parse_accepts_exact_usize() {
+        assert_eq!(parse("2560").unwrap().as_usize(), Some(2560));
+        assert_eq!(parse("0.5").unwrap().as_usize(), None);
+        assert_eq!(parse("1e300").unwrap().as_usize(), None);
     }
 
     #[test]
