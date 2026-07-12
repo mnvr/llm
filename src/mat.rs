@@ -24,7 +24,7 @@ impl Mat {
     }
 
     pub fn matmul(&self, b: &Mat) -> Mat {
-        assert_eq!(self.cols, b.rows);
+        assert_eq!(self.cols, b.rows, "matmul: self.cols must equal b.rows");
         let mut c = Mat::zeros(self.rows, b.cols);
         for i in 0..self.rows {
             for j in 0..b.cols {
@@ -39,7 +39,7 @@ impl Mat {
     }
 
     pub fn matmul_ikj(&self, b: &Mat) -> Mat {
-        assert_eq!(self.cols, b.rows);
+        assert_eq!(self.cols, b.rows, "matmul_ikj: self.cols must equal b.rows");
         let mut c = Mat::zeros(self.rows, b.cols);
         for i in 0..self.rows {
             for k in 0..self.cols {

@@ -1,5 +1,6 @@
 use std::fmt;
 
+#[derive(Debug)]
 pub enum Json {
     Null,
     Bool(bool),
@@ -406,11 +407,9 @@ mod tests {
 
     #[test]
     fn parse_reports_error_position_and_msg() {
-        let Err(e) = parse("truefalse") else {
-            panic!("expected error")
-        };
+        let e = parse("truefalse").unwrap_err();
         assert_eq!(e.pos, 4);
-        assert_eq!(e.msg, "end of input")
+        assert_eq!(e.msg, "end of input");
     }
 
     #[test]
@@ -436,10 +435,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_accepts_exact_usize() {
+    fn as_usize_requires_exact_nonnegative_integers() {
         assert_eq!(parse("2560").unwrap().as_usize(), Some(2560));
         assert_eq!(parse("0.5").unwrap().as_usize(), None);
         assert_eq!(parse("1e300").unwrap().as_usize(), None);
+        assert_eq!(parse("-1").unwrap().as_usize(), None);
     }
 
     #[test]
@@ -454,10 +454,7 @@ mod tests {
             (r#""\ud83d\ude00""#, "😀"),
             (r#""直接""#, "直接"),
         ] {
-            let Json::String(s) = parse(input).unwrap() else {
-                panic!("{input}")
-            };
-            assert_eq!(s, expected);
+            assert_eq!(parse(input).unwrap().as_str(), Some(expected), "{input}");
         }
     }
 
@@ -468,7 +465,7 @@ mod tests {
             r#""\x""#,
             r#""\u12""#,
             r#""\ud800""#,
-            r#""\ud8000\u0041""#,
+            r#""\ud800\u0041""#,
             "\"\n\"",
         ] {
             assert!(parse(s).is_err(), "{s}");

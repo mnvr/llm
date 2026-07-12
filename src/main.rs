@@ -4,7 +4,7 @@ use std::fs;
 use llm::config::Config;
 use llm::json;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     if let Err(e) = run() {
         report(e.as_ref());
         std::process::exit(1);
