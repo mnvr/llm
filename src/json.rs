@@ -63,6 +63,14 @@ pub struct ParseError {
     pub msg: &'static str,
 }
 
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "expected {} at byte {}", self.msg, self.pos)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 struct Parser<'a> {
     bytes: &'a [u8],
     pos: usize,
