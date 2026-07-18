@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt;
 use std::fs;
 
@@ -22,42 +23,44 @@ pub struct Config {
 #[derive(Debug)]
 pub struct LoadError {
     path: String,
-    msg: String,
-    source: Option<Box<dyn std::error::Error + 'static>>,
+    source: Box<dyn Error>,
 }
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.path, self.msg)
+        write!(f, "could not load {}", self.path)
     }
 }
 
-impl std::error::Error for LoadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_deref()
+impl Error for LoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
     }
 }
 
 #[derive(Debug)]
 struct ParseError(String);
 
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error for ParseError {}
+
 impl Config {
     pub fn load(path: &str) -> Result<Config, LoadError> {
-        let text = fs::read_to_string(path).map_err(|e| LoadError {
+        Self::load_inner(path).map_err(|source| LoadError {
             path: path.to_string(),
-            msg: "could not read file".to_string(),
-            source: Some(Box::new(e)),
-        })?;
-        let json = json::parse(&text).map_err(|e| LoadError {
-            path: path.to_string(),
-            msg: "invalid json".to_string(),
-            source: Some(Box::new(e)),
-        })?;
-        Config::from_json(&json).map_err(|e| LoadError {
-            path: path.to_string(),
-            msg: e.0,
-            source: None,
+            source,
         })
+    }
+
+    fn load_inner(path: &str) -> Result<Config, Box<dyn Error>> {
+        let text = fs::read_to_string(path)?;
+        let json = json::parse(&text)?;
+        Ok(Config::from_json(&json)?)
     }
 
     fn from_json(json: &Json) -> Result<Config, ParseError> {

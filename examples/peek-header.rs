@@ -23,8 +23,8 @@ fn main() {
         .expect("tensor should have data_offsets")
         .as_array()
         .expect("data_offsets should be an array");
-    let start = offsets[0].as_f64().unwrap() as usize;
-    let end = offsets[1].as_f64().unwrap() as usize;
+    let start = offsets[0].as_usize().unwrap();
+    let end = offsets[1].as_usize().unwrap();
     let weight = &data[start..end];
 
     for i in 0..8 {

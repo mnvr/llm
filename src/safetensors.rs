@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::fmt;
 use std::fs;
 
@@ -24,19 +25,18 @@ struct TensorInfo {
 #[derive(Debug)]
 pub struct LoadError {
     path: String,
-    msg: String,
-    source: Option<Box<dyn std::error::Error + 'static>>,
+    source: Box<dyn Error>,
 }
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.path, self.msg)
+        write!(f, "could not load {}", self.path)
     }
 }
 
-impl std::error::Error for LoadError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_deref()
+impl Error for LoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
     }
 }
 
@@ -59,22 +59,27 @@ impl fmt::Display for ParseError {
     }
 }
 
+impl Error for ParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Utf8(e) => Some(e),
+            Self::Json(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl Shard {
     pub fn load(path: &str) -> Result<Shard, LoadError> {
-        let bytes = fs::read(path).map_err(|e| LoadError {
+        Self::load_inner(path).map_err(|source| LoadError {
             path: path.to_string(),
-            msg: "could not open file".to_string(),
-            source: Some(Box::new(e)),
-        })?;
-        Shard::parse(bytes).map_err(|e| LoadError {
-            path: path.to_string(),
-            msg: e.to_string(),
-            source: match e {
-                ParseError::Utf8(e) => Some(Box::new(e)),
-                ParseError::Json(e) => Some(Box::new(e)),
-                _ => None,
-            },
+            source,
         })
+    }
+
+    fn load_inner(path: &str) -> Result<Self, Box<dyn Error>> {
+        let bytes = fs::read(path)?;
+        Ok(Self::parse(bytes)?)
     }
 
     fn parse(bytes: Vec<u8>) -> Result<Shard, ParseError> {
@@ -82,11 +87,12 @@ impl Shard {
         let head = bytes
             .first_chunk::<8>()
             .ok_or(E::Format("file too short"))?;
-        let header_len = u64::from_le_bytes(*head);
-        if header_len > (bytes.len() - 8) as u64 {
+        let header_len = usize::try_from(u64::from_le_bytes(*head))
+            .map_err(|_| E::Format("header length does not fit usize"))?;
+        if header_len > (bytes.len() - 8) {
             return Err(E::Format("header extends past end of file"));
         }
-        let data_start = 8 + usize::try_from(header_len).unwrap();
+        let data_start = 8 + header_len;
         let text = str::from_utf8(&bytes[8..data_start]).map_err(E::Utf8)?;
         let header = json::parse(text).map_err(E::Json)?;
         let entries = header
