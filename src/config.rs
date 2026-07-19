@@ -60,7 +60,7 @@ impl Config {
     fn load_inner(path: &str) -> Result<Config, Box<dyn Error>> {
         let text = fs::read_to_string(path)?;
         let json = json::parse(&text)?;
-        Ok(Config::from_json(&json)?)
+        Ok(Self::from_json(&json)?)
     }
 
     fn from_json(json: &Json) -> Result<Config, ParseError> {
