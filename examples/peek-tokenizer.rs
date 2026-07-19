@@ -28,11 +28,8 @@ fn main() {
     for (token, id) in &vocab[..8] {
         println!("{}: {token:?}", id.as_usize().unwrap());
     }
-    println!("a -> {:?}", vocab.iter().find(|(token, _)| token == "a"));
-    println!(
-        "space -> {:?}",
-        vocab.iter().find(|(token, _)| token == " ")
-    );
+    print_token(vocab, "a", "a");
+    print_token(vocab, "space", " ");
     println!();
     let merges = model.get("merges").unwrap().as_array().unwrap();
     for merge in &merges[..8] {
@@ -40,14 +37,23 @@ fn main() {
     }
 
     println!("{:#x}", 'Ġ' as u32);
-    println!("space encoded -> {:?}", vocab.iter().find(|(token, _)| token == "\u{120}"));
-    println!("Ġ -> {:?}", vocab.iter().find(|(token, _)| token == "Ġ"));
-    println!("Ā -> {:?}", vocab.iter().find(|(token, _)| token == "Ā"));
-    println!("del -> {:?}", vocab.iter().find(|(token, _)| token == "\u{121}"));
+    println!(
+        "space encoded -> {:?}",
+        vocab.iter().find(|(token, _)| token == "\u{120}")
+    );
+    print_token(vocab, "Ġ", "Ġ");
+    print_token(vocab, "Ā", "Ā");
+    print_token(vocab, "del", "\u{121}");
 
     for key in ["normalizer", "pre_tokenizer", "post_processor", "decoder"] {
         println!("{key}: {:#?}", json.get(key).unwrap());
     }
+
+    print_token(vocab, "0x142", "\u{142}");
+    print_token(vocab, "0x143", "\u{143}");
+    print_token(vocab, "·", "·");
+    print_token(vocab, "0xa0", "\u{a0}");
+    print_token(vocab, "0xad", "\u{ad}");
 }
 
 fn describe(key: &str, value: &Json) {
@@ -56,4 +62,8 @@ fn describe(key: &str, value: &Json) {
         Json::Array(items) => println!("{key}: array, {} items", items.len()),
         other => println!("{key}: {other:?}"),
     }
+}
+
+fn print_token(vocab: &[(String, Json)], label: &str, token: &str) {
+    println!("{label} -> {:?}", vocab.iter().find(|(t, _)| t == token));
 }
