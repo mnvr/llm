@@ -25,6 +25,15 @@ impl Tokenizer {
         Self::load_inner(path).map_err(|source| LoadError::new(path, source))
     }
 
+    pub fn decode(&self, ids: &[usize]) -> String {
+        let bytes: Vec<u8> = ids
+            .iter()
+            .flat_map(|&id| self.vocab[id].chars())
+            .map(|c| char_byte(c).unwrap())
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     fn load_inner(path: &str) -> Result<Tokenizer, Box<dyn Error>> {
         let text = fs::read_to_string(path)?;
         let json = json::parse(&text)?;
@@ -39,6 +48,9 @@ impl Tokenizer {
             .ok_or_else(|| ParseError("missing model.vocab".to_string()))?;
         let mut vocab = vec![String::new(); entries.len()];
         for (token, id) in entries {
+            if !token.chars().all(|c| char_byte(c).is_some()) {
+                return Err(ParseError(format!("token {token:?} should be byte-level")));
+            }
             let id = id
                 .as_usize()
                 .filter(|&id| id < vocab.len())
@@ -67,10 +79,21 @@ pub fn byte_char(b: u8) -> char {
     char::from_u32(c).unwrap()
 }
 
+fn char_byte(c: char) -> Option<u8> {
+    let c = u32::from(c);
+    let b = match c {
+        0x21..=0x7e | 0xa1..=0xac | 0xae..=0xff => c,
+        0x100..=0x120 => c - 0x100,
+        0x121..=0x142 => c - 0x121 + 0x7f,
+        0x143 => 0xad,
+        _ => return None,
+    };
+    Some(u8::try_from(b).unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn from_json_places_tokens_by_id() {
@@ -88,6 +111,7 @@ mod tests {
             r#"{"model":{"vocab":{"a":true}}}"#,
             r#"{"model":{"vocab":{"a":0,"b":2}}}"#,
             r#"{"model":{"vocab":{"a":0,"b":0}}}"#,
+            r#"{"model":{"vocab":{"€":0}}}"#,
         ];
         for text in texts {
             assert!(
@@ -95,6 +119,20 @@ mod tests {
                 "{text}"
             )
         }
+    }
+
+    #[test]
+    fn decode_reverses_spellings() {
+        let text = r#"{"model":{"vocab":{"Ġhello":0,"Ã©":1,"!":2}}}"#;
+        let tokenizer = Tokenizer::from_json(&json::parse(text).unwrap()).unwrap();
+        assert_eq!(tokenizer.decode(&[0, 1, 2]), " helloé!");
+    }
+
+    #[test]
+    fn decode_replaces_invalid_utf8() {
+        let text = r#"{"model":{"vocab":{"Ã":0}}}"#;
+        let tokenizer = Tokenizer::from_json(&json::parse(text).unwrap()).unwrap();
+        assert_eq!(tokenizer.decode(&[0]), "\u{fffd}");
     }
 
     #[test]
@@ -111,8 +149,10 @@ mod tests {
     }
 
     #[test]
-    fn byte_char_is_injective() {
-        let spellings: HashSet<char> = (0..=u8::MAX).map(byte_char).collect();
-        assert_eq!(spellings.len(), 256);
+    fn char_byte_inverts_byte_char() {
+        for b in 0..=u8::MAX {
+            assert_eq!(char_byte(byte_char(b)), Some(b));
+        }
+        assert_eq!(char_byte('€'), None);
     }
 }
