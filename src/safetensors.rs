@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 
+use crate::error::LoadError;
 use crate::json::{self, Json};
 
 pub struct Tensor {
@@ -20,24 +21,6 @@ struct TensorInfo {
     shape: Vec<usize>,
     start: usize,
     end: usize,
-}
-
-#[derive(Debug)]
-pub struct LoadError {
-    path: String,
-    source: Box<dyn Error>,
-}
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not load {}", self.path)
-    }
-}
-
-impl Error for LoadError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
-    }
 }
 
 #[derive(Debug)]
@@ -71,10 +54,7 @@ impl Error for ParseError {
 
 impl Shard {
     pub fn load(path: &str) -> Result<Shard, LoadError> {
-        Self::load_inner(path).map_err(|source| LoadError {
-            path: path.to_string(),
-            source,
-        })
+        Self::load_inner(path).map_err(|source| LoadError::new(path, source))
     }
 
     fn load_inner(path: &str) -> Result<Self, Box<dyn Error>> {

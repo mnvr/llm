@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 
+use crate::error::LoadError;
 use crate::json::{self, Json};
 
 pub struct Tokenizer {
@@ -9,25 +10,7 @@ pub struct Tokenizer {
 }
 
 #[derive(Debug)]
-pub struct LoadError {
-    path: String,
-    source: Box<dyn Error>,
-}
-
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not load {}", self.path)
-    }
-}
-
-impl Error for LoadError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
-    }
-}
-
-#[derive(Debug)]
-pub struct ParseError(String);
+struct ParseError(String);
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -39,10 +22,7 @@ impl Error for ParseError {}
 
 impl Tokenizer {
     pub fn load(path: &str) -> Result<Tokenizer, LoadError> {
-        Self::load_inner(path).map_err(|source| LoadError {
-            path: path.to_string(),
-            source,
-        })
+        Self::load_inner(path).map_err(|source| LoadError::new(path, source))
     }
 
     fn load_inner(path: &str) -> Result<Tokenizer, Box<dyn Error>> {
@@ -111,7 +91,7 @@ mod tests {
         ];
         for text in texts {
             assert!(
-                Tokenizer::from_json(&json::parse(&text).unwrap()).is_err(),
+                Tokenizer::from_json(&json::parse(text).unwrap()).is_err(),
                 "{text}"
             )
         }

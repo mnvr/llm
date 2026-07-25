@@ -20,3 +20,30 @@ impl<E: Error + 'static> From<E> for Report {
         Report(Box::new(e))
     }
 }
+
+#[derive(Debug)]
+pub struct LoadError {
+    path: String,
+    source: Box<dyn Error>,
+}
+
+impl LoadError {
+    pub fn new(path: &str, source: Box<dyn Error>) -> LoadError {
+        LoadError {
+            path: path.to_string(),
+            source,
+        }
+    }
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "could not load {}", self.path)
+    }
+}
+
+impl Error for LoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
