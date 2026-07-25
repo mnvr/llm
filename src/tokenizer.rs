@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -7,6 +8,8 @@ use crate::json::{self, Json};
 
 pub struct Tokenizer {
     pub vocab: Vec<String>,
+    ids: HashMap<String, usize>,
+    ranks: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -23,6 +26,24 @@ impl Error for ParseError {}
 impl Tokenizer {
     pub fn load(path: &str) -> Result<Tokenizer, LoadError> {
         Self::load_inner(path).map_err(|source| LoadError::new(path, source))
+    }
+
+    pub fn merge(&self, chunk: &str) -> Vec<usize> {
+        let mut parts: Vec<_> = chunk.bytes().map(|b| byte_char(b).to_string()).collect();
+        loop {
+            let best = parts
+                .windows(2)
+                .enumerate()
+                .filter_map(|(i, pair)| {
+                    let rank = self.ranks.get(&format!("{} {}", pair[0], pair[1]))?;
+                    Some((*rank, i))
+                })
+                .min();
+            let Some((_, i)) = best else { break };
+            let right = parts.remove(i + 1);
+            parts[i].push_str(&right);
+        }
+        parts.iter().map(|part| self.ids[part]).collect()
     }
 
     pub fn decode(&self, ids: &[usize]) -> String {
@@ -65,11 +86,28 @@ impl Tokenizer {
             }
             vocab[id] = token.clone();
         }
-        Ok(Tokenizer { vocab })
+        let merges = json
+            .get("model")
+            .and_then(|model| model.get("merges"))
+            .and_then(Json::as_array)
+            .ok_or_else(|| ParseError("missing model.merges".to_string()))?;
+        let mut ranks = HashMap::new();
+        for (rank, merge) in merges.iter().enumerate() {
+            let merge = merge
+                .as_str()
+                .ok_or_else(|| ParseError(format!("merge {rank} should be a string")))?;
+            ranks.insert(merge.to_string(), rank);
+        }
+        let ids = vocab
+            .iter()
+            .enumerate()
+            .map(|(id, token)| (token.clone(), id))
+            .collect();
+        Ok(Tokenizer { vocab, ids, ranks })
     }
 }
 
-pub fn byte_char(b: u8) -> char {
+fn byte_char(b: u8) -> char {
     let c = match b {
         0x21..=0x7e | 0xa1..=0xac | 0xae..=0xff => u32::from(b),
         0x00..=0x20 => 0x100 + u32::from(b),
@@ -95,10 +133,14 @@ fn char_byte(c: char) -> Option<u8> {
 mod tests {
     use super::*;
 
+    fn tokenizer(text: &str) -> Tokenizer {
+        Tokenizer::from_json(&json::parse(text).unwrap()).unwrap()
+    }
+
     #[test]
     fn from_json_places_tokens_by_id() {
-        let text = r#"{"model":{"vocab":{"b":1,"a":0}}}"#;
-        let tokenizer = Tokenizer::from_json(&json::parse(text).unwrap()).unwrap();
+        let text = r#"{"model":{"vocab":{"b":1,"a":0},"merges":[]}}"#;
+        let tokenizer = tokenizer(text);
         assert_eq!(tokenizer.vocab, ["a", "b"]);
     }
 
@@ -108,10 +150,13 @@ mod tests {
             r#"{}"#,
             r#"{"model":{}}"#,
             r#"{"model":{"vocab":[]}}"#,
-            r#"{"model":{"vocab":{"a":true}}}"#,
-            r#"{"model":{"vocab":{"a":0,"b":2}}}"#,
-            r#"{"model":{"vocab":{"a":0,"b":0}}}"#,
-            r#"{"model":{"vocab":{"€":0}}}"#,
+            r#"{"model":{"merges":[]}}"#,
+            r#"{"model":{"vocab":{"a":true},"merges":[]}}"#,
+            r#"{"model":{"vocab":{"a":0,"b":2},"merges":[]}}"#,
+            r#"{"model":{"vocab":{"a":0,"b":0},"merges":[]}}"#,
+            r#"{"model":{"vocab":{"€":0},"merges":[]}}"#,
+            r#"{"model":{"vocab":{"a":0}}}"#,
+            r#"{"model":{"vocab":{"a":0},"merges":[0]}}"#,
         ];
         for text in texts {
             assert!(
@@ -122,16 +167,39 @@ mod tests {
     }
 
     #[test]
+    fn merge_prefers_earlier_merges() {
+        let text = r#"{"model":{"vocab":{"a":0,"b":1,"c":2,"bc":3},"merges":["b c", "a b"]}}"#;
+        let tokenizer = tokenizer(text);
+        assert_eq!(tokenizer.merge("abc"), [0, 3]);
+    }
+
+    #[test]
+    fn merge_chains_merges() {
+        let text =
+            r#"{"model":{"vocab":{"a":0,"b":1,"c":2,"ab":3,"abc":4},"merges":["a b","ab c"]}}"#;
+        let tokenizer = tokenizer(text);
+        assert_eq!(tokenizer.merge("abc"), [4]);
+        assert_eq!(tokenizer.merge("cab"), [2, 3]);
+    }
+
+    #[test]
+    fn merge_spells_bytes_first() {
+        let text = r#"{"model":{"vocab":{"Ġ":0,"a":1,"Ġa":2},"merges":["Ġ a"]}}"#;
+        let tokenizer = tokenizer(text);
+        assert_eq!(tokenizer.merge(" a"), [2]);
+    }
+
+    #[test]
     fn decode_reverses_spellings() {
-        let text = r#"{"model":{"vocab":{"Ġhello":0,"Ã©":1,"!":2}}}"#;
-        let tokenizer = Tokenizer::from_json(&json::parse(text).unwrap()).unwrap();
+        let text = r#"{"model":{"vocab":{"Ġhello":0,"Ã©":1,"!":2},"merges":[]}}"#;
+        let tokenizer = tokenizer(text);
         assert_eq!(tokenizer.decode(&[0, 1, 2]), " helloé!");
     }
 
     #[test]
     fn decode_replaces_invalid_utf8() {
-        let text = r#"{"model":{"vocab":{"Ã":0}}}"#;
-        let tokenizer = Tokenizer::from_json(&json::parse(text).unwrap()).unwrap();
+        let text = r#"{"model":{"vocab":{"Ã":0},"merges":[]}}"#;
+        let tokenizer = tokenizer(text);
         assert_eq!(tokenizer.decode(&[0]), "\u{fffd}");
     }
 
