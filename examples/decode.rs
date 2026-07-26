@@ -12,4 +12,10 @@ fn main() {
     for text in ["Hello", " world", "!", " hello", " HELLO", "Ġworld"] {
         println!("{text:?} -> {:?}", tokenizer.merge(text));
     }
+
+    for text in ["  Hello", "We've 12 cats!", "def main():\n    pass\n"] {
+        let ids = tokenizer.encode(text);
+        println!("{text:?} -> {ids:?} -> {:?}", tokenizer.decode(&ids));
+    }
+    println!("unsplit: {:?}", tokenizer.merge("  Hello"));
 }

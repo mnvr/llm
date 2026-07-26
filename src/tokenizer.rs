@@ -28,6 +28,13 @@ impl Tokenizer {
         Self::load_inner(path).map_err(|source| LoadError::new(path, source))
     }
 
+    pub fn encode(&self, text: &str) -> Vec<usize> {
+        split(text)
+            .iter()
+            .flat_map(|chunk| self.merge(chunk))
+            .collect()
+    }
+
     pub fn merge(&self, chunk: &str) -> Vec<usize> {
         let mut parts: Vec<_> = chunk.bytes().map(|b| byte_char(b).to_string()).collect();
         loop {
@@ -127,6 +134,29 @@ fn char_byte(c: char) -> Option<u8> {
         _ => return None,
     };
     Some(u8::try_from(b).unwrap())
+}
+
+fn split(text: &str) -> Vec<&str> {
+    let chars: Vec<_> = text.char_indices().collect();
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let rest = &chars[start..];
+        let len = contraction(rest)
+            .or_else(|| word(rest))
+            .or_else(|| number(rest))
+            .or_else(|| punctuation(rest))
+            .or_else(|| newlines(rest))
+            .or_else(|| space(rest))
+            .or_else(|| whitespace(rest))
+            .unwrap();
+        let end = start + len;
+        let from = chars[start].0;
+        let to = chars.get(end).map_or(text.len(), |&(i, _)| i);
+        chunks.push(&text[from..to]);
+        start = end;
+    }
+    chunks
 }
 
 fn is_letter(c: char) -> bool {
@@ -305,6 +335,32 @@ mod tests {
     }
 
     #[test]
+    fn split_matches_example() {
+        assert_eq!(
+            split("We've 12 cats!"),
+            ["We", "'ve", " ", "1", "2", " cats", "!"]
+        );
+    }
+
+    #[test]
+    fn split_keeps_the_last_space_for_the_word() {
+        assert_eq!(split("  Hello"), [" ", " Hello"]);
+    }
+
+    #[test]
+    fn split_glues_newlines_to_punctuation() {
+        assert_eq!(split("!\n"), ["!\n"]);
+        assert_eq!(split("a\n\nb"), ["a", "\n\n", "b"]);
+    }
+
+    #[test]
+    fn split_tiles_the_text() {
+        for text in ["We've 12 cats!", "  Hello  ", "a\r\n\r\nb", " é’…\t9", ""] {
+            assert_eq!(split(text).concat(), text, "{text}");
+        }
+    }
+
+    #[test]
     fn contraction_takes_the_seven_tails() {
         for tail in ["'s", "'t", "'m", "'d", "'re", "'ve", "'ll"] {
             assert_eq!(contraction(&char_indices(tail)), Some(tail.len()), "{tail}");
@@ -354,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn spaces_gives_the_last_space_back() {
+    fn space_gives_the_last_space_back() {
         assert_eq!(space(&char_indices("")), None);
         assert_eq!(space(&char_indices("a")), None);
         assert_eq!(space(&char_indices(" a")), None);
