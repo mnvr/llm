@@ -129,12 +129,92 @@ fn char_byte(c: char) -> Option<u8> {
     Some(u8::try_from(b).unwrap())
 }
 
+fn is_letter(c: char) -> bool {
+    // TODO: Rough equivalent of \p{L}
+    c.is_alphabetic() && !c.is_numeric()
+}
+
+/// (?i:'s|'t|'re|'ve|'m|'ll|'d)
+fn contraction(s: &[(usize, char)]) -> Option<usize> {
+    if s.first()?.1 != '\'' {
+        return None;
+    }
+    let c = |i: usize| s.get(i).map(|(_, c)| c.to_ascii_lowercase());
+    match (c(1)?, c(2)) {
+        ('s' | 't' | 'm' | 'd', _) => Some(2),
+        ('r', Some('e')) | ('v', Some('e')) | ('l', Some('l')) => Some(3),
+        _ => None,
+    }
+}
+
+/// [^\r\n\p{L}\p{N}]?\p{L}+
+fn word(s: &[(usize, char)]) -> Option<usize> {
+    let c = s.first()?.1;
+    let prefix = usize::from(!(c == '\r' || c == '\n' || is_letter(c) || c.is_numeric()));
+    let letters = s[prefix..]
+        .iter()
+        .take_while(|&&(_, c)| is_letter(c))
+        .count();
+    (letters > 0).then_some(prefix + letters)
+}
+
+/// \p{N}
+fn number(s: &[(usize, char)]) -> Option<usize> {
+    s.first().filter(|(_, c)| c.is_numeric()).map(|_| 1)
+}
+
+///  ?[^\s\p{L}\p{N}]+[\r\n]*
+fn punctuation(s: &[(usize, char)]) -> Option<usize> {
+    let space = usize::from(s.first()?.1 == ' ');
+    let punc = s[space..]
+        .iter()
+        .take_while(|&&(_, c)| !(c.is_whitespace() || is_letter(c) || c.is_numeric()))
+        .count();
+    if punc == 0 {
+        return None;
+    }
+    let nl = s[(space + punc)..]
+        .iter()
+        .take_while(|&&(_, c)| c == '\r' || c == '\n')
+        .count();
+    Some(space + punc + nl)
+}
+
+/// \s*[\r\n]+
+fn newlines(s: &[(usize, char)]) -> Option<usize> {
+    let run = s.iter().take_while(|&&(_, c)| c.is_whitespace()).count();
+    let last = s[..run]
+        .iter()
+        .rposition(|&(_, c)| c == '\r' || c == '\n')?;
+    Some(last + 1)
+}
+
+/// \s+(?!\S)
+fn space(s: &[(usize, char)]) -> Option<usize> {
+    let run = s.iter().take_while(|&&(_, c)| c.is_whitespace()).count();
+    if run == s.len() {
+        (run > 0).then_some(run)
+    } else {
+        (run > 1).then(|| run - 1)
+    }
+}
+
+/// \s+
+fn whitespace(s: &[(usize, char)]) -> Option<usize> {
+    let run = s.iter().take_while(|&&(_, c)| c.is_whitespace()).count();
+    (run > 0).then_some(run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tokenizer(text: &str) -> Tokenizer {
         Tokenizer::from_json(&json::parse(text).unwrap()).unwrap()
+    }
+
+    fn char_indices(s: &str) -> Vec<(usize, char)> {
+        s.char_indices().collect()
     }
 
     #[test]
@@ -222,5 +302,72 @@ mod tests {
             assert_eq!(char_byte(byte_char(b)), Some(b));
         }
         assert_eq!(char_byte('€'), None);
+    }
+
+    #[test]
+    fn contraction_takes_the_seven_tails() {
+        for tail in ["'s", "'t", "'m", "'d", "'re", "'ve", "'ll"] {
+            assert_eq!(contraction(&char_indices(tail)), Some(tail.len()), "{tail}");
+        }
+        assert_eq!(contraction(&char_indices("'S")), Some(2));
+        assert_eq!(contraction(&char_indices("'r")), None);
+    }
+
+    #[test]
+    fn word_takes_letters_and_their_prefix() {
+        assert_eq!(word(&char_indices("hello")), Some(5));
+        assert_eq!(word(&char_indices(" hello")), Some(6));
+        assert_eq!(word(&char_indices(" Hello")), Some(6));
+        assert_eq!(word(&char_indices("42")), None);
+    }
+
+    #[test]
+    fn number_takes_one_digit() {
+        assert_eq!(number(&char_indices("a")), None);
+        assert_eq!(number(&char_indices("1")), Some(1));
+        assert_eq!(number(&char_indices("12")), Some(1));
+    }
+
+    #[test]
+    fn punctuation_takes_a_run_and_trailing_newlines() {
+        assert_eq!(punctuation(&char_indices("")), None);
+        assert_eq!(punctuation(&char_indices("1")), None);
+        assert_eq!(punctuation(&char_indices(".")), Some(1));
+        assert_eq!(punctuation(&char_indices("..")), Some(2));
+        assert_eq!(punctuation(&char_indices(".1")), Some(1));
+        assert_eq!(punctuation(&char_indices(".1\n")), Some(1));
+        assert_eq!(punctuation(&char_indices("..\n\r.")), Some(4));
+        assert_eq!(punctuation(&char_indices(" ..\n\r.")), Some(5));
+        assert_eq!(punctuation(&char_indices(" 1..\n.")), None);
+        assert_eq!(punctuation(&char_indices("\n")), None);
+        assert_eq!(punctuation(&char_indices(" \n.")), None);
+    }
+
+    #[test]
+    fn newlines_end_at_the_last_newline() {
+        assert_eq!(newlines(&char_indices(" ")), None);
+        assert_eq!(newlines(&char_indices("1\n")), None);
+        assert_eq!(newlines(&char_indices("\n")), Some(1));
+        assert_eq!(newlines(&char_indices(" \n")), Some(2));
+        assert_eq!(newlines(&char_indices(" \n\r\n")), Some(4));
+        assert_eq!(newlines(&char_indices(" \n \n ")), Some(4));
+    }
+
+    #[test]
+    fn spaces_gives_the_last_space_back() {
+        assert_eq!(space(&char_indices("")), None);
+        assert_eq!(space(&char_indices("a")), None);
+        assert_eq!(space(&char_indices(" a")), None);
+        assert_eq!(space(&char_indices("  a")), Some(1));
+        assert_eq!(space(&char_indices("  ")), Some(2));
+        assert_eq!(space(&char_indices(" ")), Some(1));
+    }
+
+    #[test]
+    fn whitespace_consumes_spaces() {
+        assert_eq!(whitespace(&char_indices("")), None);
+        assert_eq!(whitespace(&char_indices("a ")), None);
+        assert_eq!(whitespace(&char_indices(" ")), Some(1));
+        assert_eq!(whitespace(&char_indices("  a")), Some(2));
     }
 }
