@@ -29,7 +29,7 @@ impl Tokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<usize> {
-        split(text)
+        split(nfc(text))
             .iter()
             .flat_map(|chunk| self.merge(chunk))
             .collect()
@@ -134,6 +134,11 @@ fn char_byte(c: char) -> Option<u8> {
         _ => return None,
     };
     Some(u8::try_from(b).unwrap())
+}
+
+fn nfc(text: &str) -> &str {
+    // TODO: NFC
+    text
 }
 
 fn split(text: &str) -> Vec<&str> {
@@ -278,7 +283,7 @@ mod tests {
 
     #[test]
     fn merge_prefers_earlier_merges() {
-        let text = r#"{"model":{"vocab":{"a":0,"b":1,"c":2,"bc":3},"merges":["b c", "a b"]}}"#;
+        let text = r#"{"model":{"vocab":{"a":0,"b":1,"c":2,"bc":3,"ab":4},"merges":["b c", "a b"]}}"#;
         let tokenizer = tokenizer(text);
         assert_eq!(tokenizer.merge("abc"), [0, 3]);
     }

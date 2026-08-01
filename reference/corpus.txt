@@ -1,0 +1,12 @@
+We've 12 cats!
+def main():
+	pass
+Hello, world! It's 2026.
+ HELLO WORLD
+你好，世界。日本語もある。
+हिन्दी में एक पंक्ति
+🙂 emoji 🎉 test!
+"quotes" and 'apostrophes' aren't simple
+naïve café résumé
+décomposed é accent
+crlf line
