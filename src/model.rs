@@ -11,6 +11,17 @@ pub fn matvec(w: &[f32], x: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+fn silu(x: f32) -> f32 {
+    x / (1.0 + (-x).exp())
+}
+
+pub fn mlp(x: &[f32], gate: &[f32], up: &[f32], down: &[f32]) -> Vec<f32> {
+    let g = matvec(gate, x);
+    let u = matvec(up, x);
+    let hidden: Vec<f32> = g.iter().zip(&u).map(|(&g, &u)| silu(g) * u).collect();
+    matvec(down, &hidden)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -31,5 +42,21 @@ mod tests {
     fn matvec_dots_each_row_with_x() {
         let w = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         assert_eq!(matvec(&w, &[3.0, 4.0]), [3.0, 4.0, 7.0]);
+    }
+
+    #[test]
+    fn silu_passes_large_positive_and_blocks_large_negative() {
+        assert_eq!(silu(0.0), 0.0);
+        assert_eq!(silu(100.0), 100.0);
+        assert_eq!(silu(-100.0), 0.0);
+    }
+
+    #[test]
+    fn mlp_scales_each_up_channel_by_its_gate_then_projects_down() {
+        let x = [1.0, 2.0];
+        let gate = [2.0, -1.0, 100.0, 0.0, -100.0, 0.0];
+        let up = [5.0, 5.0, 1.0, 1.0, 7.0, 0.0];
+        let down = [1.0, 1.0, 1.0, 0.0, 0.5, 10.0];
+        assert_eq!(mlp(&x, &gate, &up, &down), [300.0, 150.0]);
     }
 }
