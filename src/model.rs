@@ -22,6 +22,38 @@ pub fn mlp(x: &[f32], gate: &[f32], up: &[f32], down: &[f32]) -> Vec<f32> {
     matvec(down, &hidden)
 }
 
+pub fn softmax(x: &[f32]) -> Vec<f32> {
+    let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<_> = x.iter().map(|v| (v - max).exp()).collect();
+    let sum: f32 = exps.iter().sum();
+    exps.iter().map(|v| v / sum).collect()
+}
+
+pub fn attend(q: &[f32], keys: &[f32], values: &[f32]) -> Vec<f32> {
+    let scale = 1.0 / (q.len() as f32).sqrt();
+    let scores: Vec<f32> = matvec(keys, q).iter().map(|s| s * scale).collect();
+    let weights = softmax(&scores);
+    let mut out = vec![0.0; q.len()];
+    for (&w, row) in weights.iter().zip(values.chunks_exact(q.len())) {
+        for (o, &v) in out.iter_mut().zip(row) {
+            *o += w * v;
+        }
+    }
+    out
+}
+
+pub fn rope(x: &[f32], pos: usize, theta: f32) -> Vec<f32> {
+    let half = x.len() / 2;
+    let mut out = vec![0.0; x.len()];
+    for p in 0..half {
+        let angle = pos as f32 * theta.powf(-2.0 * p as f32 / x.len() as f32);
+        let (sin, cos) = angle.sin_cos();
+        out[p] = x[p] * cos - x[p + half] * sin;
+        out[p + half] = x[p] * sin + x[p + half] * cos;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +90,69 @@ mod tests {
         let up = [5.0, 5.0, 1.0, 1.0, 7.0, 0.0];
         let down = [1.0, 1.0, 1.0, 0.0, 0.5, 10.0];
         assert_eq!(mlp(&x, &gate, &up, &down), [300.0, 150.0]);
+    }
+
+    #[test]
+    fn softmax_shares_weight_equally_between_equal_scores() {
+        assert_eq!(softmax(&[3.0; 4]), [0.25; 4]);
+    }
+
+    #[test]
+    fn softmax_ignores_a_common_shift() {
+        assert_eq!(softmax(&[1.0, 2.0]), softmax(&[1001.0, 1002.0]));
+    }
+
+    #[test]
+    fn softmax_gives_all_weight_to_a_runaway_winner() {
+        assert_eq!(softmax(&[-1000.0, 0.0]), [0.0, 1.0]);
+    }
+
+    #[test]
+    fn attend_with_one_position_returns_its_value() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        assert_eq!(
+            attend(&q, &[7.0; 4], &[1.0, 2.0, 3.0, 4.0]),
+            [1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn attend_averages_the_values_of_equally_matching_keys() {
+        let q = [1.0, 1.0, 0.0, 0.0];
+        let keys = [2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+        let values = [4.0, 0.0, 2.0, 0.0, 0.0, 4.0, 2.0, 8.0];
+        assert_eq!(attend(&q, &keys, &values), [2.0, 2.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn attend_picks_the_value_of_a_dominant_key() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let keys = [0.0, 9.0, 9.0, 9.0, 4000.0, 0.0, 0.0, 0.0];
+        let values = [9.0, 9.0, 9.0, 9.0, 5.0, 6.0, 7.0, 8.0];
+        assert_eq!(attend(&q, &keys, &values), [5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn rope_at_position_zero_changes_nothing() {
+        let x = [0.5, -1.0, 2.0, 3.0];
+        assert_eq!(rope(&x, 0, 1000000.0), x);
+    }
+
+    #[test]
+    fn rope_pairs_dimension_p_with_p_plus_half() {
+        assert_eq!(
+            rope(&[1.0, 0.0, 0.0, 0.0], 1, 1.0),
+            [1f32.cos(), 0.0, 1f32.sin(), 0.0]
+        );
+        assert_eq!(
+            rope(&[0.0, 0.0, 1.0, 0.0], 1, 1.0),
+            [-(1f32.sin()), 0.0, 1f32.cos(), 0.0]
+        );
+    }
+
+    #[test]
+    fn rope_rotates_later_planes_slower() {
+        let out = rope(&[1.0, 1.0, 0.0, 0.0], 1, 1000000.0);
+        assert!(out[1] > 0.99 && out[0] < 0.55);
     }
 }
