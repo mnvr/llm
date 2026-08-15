@@ -54,6 +54,47 @@ pub fn rope(x: &[f32], pos: usize, theta: f32) -> Vec<f32> {
     out
 }
 
+#[derive(Clone, Default)]
+pub struct HeadCache {
+    pub keys: Vec<f32>,
+    pub values: Vec<f32>,
+}
+
+pub fn attention(
+    x: &[f32],
+    q_proj: &[f32],
+    k_proj: &[f32],
+    v_proj: &[f32],
+    o_proj: &[f32],
+    q_norm: &[f32],
+    k_norm: &[f32],
+    cache: &mut [HeadCache],
+    pos: usize,
+    theta: f32,
+    eps: f32,
+) -> Vec<f32> {
+    let dim = q_norm.len();
+    let q_all = matvec(q_proj, x);
+    let k_all = matvec(k_proj, x);
+    let v_all = matvec(v_proj, x);
+    for (head, (k, v)) in cache
+        .iter_mut()
+        .zip(k_all.chunks_exact(dim).zip(v_all.chunks_exact(dim)))
+    {
+        head.keys
+            .extend(rope(&rms_norm(k, k_norm, eps), pos, theta));
+        head.values.extend_from_slice(v);
+    }
+    let group = q_all.len() / k_all.len();
+    let mut merged = Vec::with_capacity(q_all.len());
+    for (i, chunk) in q_all.chunks_exact(dim).enumerate() {
+        let q = rope(&rms_norm(chunk, q_norm, eps), pos, theta);
+        let head = &cache[i / group];
+        merged.extend(attend(&q, &head.keys, &head.values));
+    }
+    matvec(o_proj, &merged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +195,90 @@ mod tests {
     fn rope_rotates_later_planes_slower() {
         let out = rope(&[1.0, 1.0, 0.0, 0.0], 1, 1000000.0);
         assert!(out[1] > 0.99 && out[0] < 0.55);
+    }
+
+    #[test]
+    fn attention_first_position_routes_values_by_group() {
+        let x = [1.0, 0.0];
+        let q_proj = [
+            8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0,
+        ];
+        let k_proj = [8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0];
+        let v_proj = [1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0];
+        let o_proj = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ];
+        let norm = [1.0, 1.0];
+        let mut cache = vec![HeadCache::default(); 2];
+        let out = attention(
+            &x, &q_proj, &k_proj, &v_proj, &o_proj, &norm, &norm, &mut cache, 0, 1000000.0, 0.0,
+        );
+        assert_eq!(out, [1.0, 3.0]);
+    }
+
+    #[test]
+    fn attention_mixes_two_cached_positions_equally() {
+        let q_proj = [8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0];
+        let k_proj = [8.0, -8000.0, 8.0, 8000.0];
+        let v_proj = [1.0, 3.0, 2.0, 4.0];
+        let o_proj = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let q_norm = [0.0, 1.0];
+        let k_norm = [3.0, 1.0];
+        let mut cache = vec![HeadCache::default()];
+        let first = attention(
+            &[1.0, 0.0],
+            &q_proj,
+            &k_proj,
+            &v_proj,
+            &o_proj,
+            &q_norm,
+            &k_norm,
+            &mut cache,
+            0,
+            1000000.0,
+            0.0,
+        );
+        assert_eq!(first, [1.0, 2.0]);
+        let second = attention(
+            &[0.0, 1.0],
+            &q_proj,
+            &k_proj,
+            &v_proj,
+            &o_proj,
+            &q_norm,
+            &k_norm,
+            &mut cache,
+            0,
+            1000000.0,
+            0.0,
+        );
+        assert_eq!(second, [2.0, 3.0]);
+    }
+
+    #[test]
+    fn attention_caches_rotated_keys_and_raw_values() {
+        let q_proj = [1.0, 0.0, 1.0, 0.0];
+        let k_proj = [8.0, 0.0, 8.0, 0.0];
+        let v_proj = [5.0, 0.0, 6.0, 0.0];
+        let o_proj = [1.0, 0.0, 0.0, 1.0];
+        let q_norm = [9.0, 9.0];
+        let k_norm = [1.0, 1.0];
+        let mut cache = vec![HeadCache::default()];
+        let out = attention(
+            &[1.0, 0.0],
+            &q_proj,
+            &k_proj,
+            &v_proj,
+            &o_proj,
+            &q_norm,
+            &k_norm,
+            &mut cache,
+            1,
+            1000000.0,
+            0.0,
+        );
+        assert_eq!(out, [5.0, 6.0]);
+        assert_eq!(cache[0].keys, rope(&[1.0, 1.0], 1, 1000000.0));
+        assert_eq!(cache[0].values, [5.0, 6.0]);
     }
 }
