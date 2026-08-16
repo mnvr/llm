@@ -1,3 +1,12 @@
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fs;
+
+use crate::config::Config;
+use crate::error::LoadError;
+use crate::json::{self, Json};
+use crate::safetensors::Shard;
+
 pub fn rms_norm(x: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
     let mean = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
     let scale = 1.0 / (mean + eps).sqrt();
@@ -122,6 +131,99 @@ pub fn layer(h: &mut [f32], w: &Layer, cache: &mut [HeadCache], pos: usize, thet
     let m = mlp(&x, &w.gate_proj, &w.up_proj, &w.down_proj);
     for (h, &d) in h.iter_mut().zip(&m) {
         *h += d;
+    }
+}
+
+pub struct Model {
+    pub embed_tokens: Vec<f32>,
+    pub layers: Vec<Layer>,
+    pub norm: Vec<f32>,
+    pub theta: f32,
+    pub eps: f32,
+}
+
+impl Model {
+    pub fn load(dir: &str, config: &Config) -> Result<Model, LoadError> {
+        Self::load_inner(dir, config).map_err(|source| LoadError::new(dir, source))
+    }
+
+    fn load_inner(dir: &str, config: &Config) -> Result<Model, Box<dyn Error>> {
+        let text = fs::read_to_string(format!("{dir}/model.safetensors.index.json"))?;
+        let index = json::parse(&text)?;
+        let map = index
+            .get("weight_map")
+            .and_then(Json::as_object)
+            .ok_or("weight_map should be an object")?;
+        let mut files: Vec<&str> = map.iter().filter_map(|(_, f)| f.as_str()).collect();
+        files.sort();
+        files.dedup();
+        let mut tensors = BTreeMap::new();
+        for file in files {
+            let shard = Shard::load(&format!("{dir}/{file}"))?;
+            for (name, f) in map {
+                if f.as_str() == Some(file) {
+                    let tensor = shard
+                        .tensor(name)
+                        .ok_or_else(|| format!("{name} should be in {file}"))?;
+                    tensors.insert(name.as_str(), tensor);
+                }
+            }
+        }
+        let mut take = |name: &str, shape: &[usize]| -> Result<Vec<f32>, Box<dyn Error>> {
+            let tensor = tensors
+                .remove(name)
+                .ok_or_else(|| format!("missing tensor {name}"))?;
+            if tensor.shape != shape {
+                return Err(format!("{name}: shape {:?} should be {shape:?}", tensor.shape).into());
+            }
+            Ok(tensor.data)
+        };
+        let hidden = config.hidden_size;
+        let inter = config.intermediate_size;
+        let dim = config.head_dim;
+        let q = config.num_attention_heads * dim;
+        let kv = config.num_key_value_heads * dim;
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for n in 0..config.num_hidden_layers {
+            let p = format!("model.layers.{n}");
+            layers.push(Layer {
+                input_layernorm: take(&format!("{p}.input_layernorm.weight"), &[hidden])?,
+                q_proj: take(&format!("{p}.self_attn.q_proj.weight"), &[q, hidden])?,
+                k_proj: take(&format!("{p}.self_attn.k_proj.weight"), &[kv, hidden])?,
+                v_proj: take(&format!("{p}.self_attn.v_proj.weight"), &[kv, hidden])?,
+                o_proj: take(&format!("{p}.self_attn.o_proj.weight"), &[hidden, q])?,
+                q_norm: take(&format!("{p}.self_attn.q_norm.weight"), &[dim])?,
+                k_norm: take(&format!("{p}.self_attn.k_norm.weight"), &[dim])?,
+                post_attention_layernorm: take(
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    &[hidden],
+                )?,
+                gate_proj: take(&format!("{p}.mlp.gate_proj.weight"), &[inter, hidden])?,
+                up_proj: take(&format!("{p}.mlp.up_proj.weight"), &[inter, hidden])?,
+                down_proj: take(&format!("{p}.mlp.down_proj.weight"), &[hidden, inter])?,
+            });
+        }
+        let model = Model {
+            embed_tokens: take("model.embed_tokens.weight", &[config.vocab_size, hidden])?,
+            layers,
+            norm: take("model.norm.weight", &[hidden])?,
+            theta: config.rope_theta as f32,
+            eps: config.rms_norm_eps as f32,
+        };
+        if let Some(name) = tensors.keys().next() {
+            return Err(format!("unused tensor {name}").into());
+        }
+        Ok(model)
+    }
+
+    pub fn forward(&self, token: u32, cache: &mut [Vec<HeadCache>], pos: usize) -> Vec<f32> {
+        let dim = self.norm.len();
+        let start = token as usize * dim;
+        let mut h = self.embed_tokens[start..start + dim].to_vec();
+        for (w, c) in self.layers.iter().zip(cache.iter_mut()) {
+            layer(&mut h, w, c, pos, self.theta, self.eps);
+        }
+        matvec(&self.embed_tokens, &rms_norm(&h, &self.norm, self.eps))
     }
 }
 
@@ -331,5 +433,46 @@ mod tests {
         let mut h = vec![8.0, 8.0];
         layer(&mut h, &w, &mut cache, 0, 1000000.0, 0.0);
         assert_eq!(h, [41.0, 209.0]);
+    }
+
+    #[test]
+    fn forward_carries_the_stream_from_lookup_to_logits() {
+        let l0 = Layer {
+            input_layernorm: vec![1.0, 1.0],
+            q_proj: vec![1.0, 0.0, 1.0, 0.0],
+            k_proj: vec![8.0, 0.0, 8.0, 0.0],
+            v_proj: vec![1.0, 0.0, 1.0, 0.0],
+            o_proj: vec![1.0, 0.0, 0.0, 1.0],
+            q_norm: vec![1.0, 1.0],
+            k_norm: vec![1.0, 1.0],
+            post_attention_layernorm: vec![1.0, 1.0],
+            gate_proj: vec![36.0, 0.0, 0.0, 0.0],
+            up_proj: vec![-1.0, 0.0, 0.0, 0.0],
+            down_proj: vec![0.5, 0.0, 0.0, 0.0],
+        };
+        let l1 = Layer {
+            input_layernorm: vec![1.0, 1.0],
+            q_proj: vec![1.0, 0.0, 1.0, 0.0],
+            k_proj: vec![8.0, 0.0, 8.0, 0.0],
+            v_proj: vec![1.0, 0.0, 0.0, 1.0],
+            o_proj: vec![1.0, 0.0, 0.0, 1.0],
+            q_norm: vec![1.0, 1.0],
+            k_norm: vec![1.0, 1.0],
+            post_attention_layernorm: vec![1.0, 1.0],
+            gate_proj: vec![-40.0, 0.0, 0.0, 0.0],
+            up_proj: vec![-1.0, 0.0, 0.0, 0.0],
+            down_proj: vec![0.5, 0.0, 0.0, 0.0],
+        };
+        let model = Model {
+            embed_tokens: vec![0.0, 1.0, 8.0, 8.0, 1.0, 3.0],
+            layers: vec![l0, l1],
+            norm: vec![1.0, 2.0],
+            theta: 1000000.0,
+            eps: 0.0,
+        };
+        let mut cache = vec![vec![HeadCache::default()]; 2];
+        assert_eq!(model.forward(1, &mut cache, 0), [2.0, 24.0, 7.0]);
+        assert_eq!(cache[0][0].values, [1.0, 1.0]);
+        assert_eq!(cache[1][0].values, [-1.0, 1.0]);
     }
 }
