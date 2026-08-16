@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt;
 use std::fs;
 
 use crate::error::LoadError;
@@ -10,17 +9,6 @@ pub struct Tokenizer {
     vocab: Vec<String>,
     ids: HashMap<String, usize>,
 }
-
-#[derive(Debug)]
-struct ParseError(String);
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Error for ParseError {}
 
 impl Tokenizer {
     pub fn load(path: &str) -> Result<Tokenizer, LoadError> {
@@ -64,31 +52,31 @@ impl Tokenizer {
     fn load_inner(path: &str) -> Result<Tokenizer, Box<dyn Error>> {
         let text = fs::read_to_string(path)?;
         let json = json::parse(&text)?;
-        Ok(Self::from_json(&json)?)
+        Self::from_json(&json)
     }
 
-    fn from_json(json: &Json) -> Result<Tokenizer, ParseError> {
+    fn from_json(json: &Json) -> Result<Tokenizer, Box<dyn Error>> {
         let entries = json
             .get("model")
             .and_then(|model| model.get("vocab"))
             .and_then(Json::as_object)
-            .ok_or_else(|| ParseError("missing model.vocab".to_string()))?;
+            .ok_or("missing model.vocab")?;
         let mut vocab = vec![String::new(); entries.len()];
         for (token, id) in entries {
             if !token.chars().all(|c| char_byte(c).is_some()) {
-                return Err(ParseError(format!("token {token:?} should be byte-level")));
+                return Err(format!("token {token:?} should be byte-level").into());
             }
             let id = id
                 .as_usize()
                 .filter(|&id| id < vocab.len())
                 .ok_or_else(|| {
-                    ParseError(format!(
+                    format!(
                         "token {token:?} should have an integer id below {}",
                         vocab.len()
-                    ))
+                    )
                 })?;
             if !vocab[id].is_empty() {
-                return Err(ParseError(format!("id {id} should be unique")));
+                return Err(format!("id {id} should be unique").into());
             }
             vocab[id] = token.clone();
         }
