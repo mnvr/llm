@@ -2,3 +2,4 @@
 Cargo.lock
 /models
 /.venv
+/vis

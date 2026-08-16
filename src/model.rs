@@ -95,6 +95,36 @@ pub fn attention(
     matvec(o_proj, &merged)
 }
 
+pub struct Layer {
+    pub input_layernorm: Vec<f32>,
+    pub q_proj: Vec<f32>,
+    pub k_proj: Vec<f32>,
+    pub v_proj: Vec<f32>,
+    pub o_proj: Vec<f32>,
+    pub q_norm: Vec<f32>,
+    pub k_norm: Vec<f32>,
+    pub post_attention_layernorm: Vec<f32>,
+    pub gate_proj: Vec<f32>,
+    pub up_proj: Vec<f32>,
+    pub down_proj: Vec<f32>,
+}
+
+pub fn layer(h: &mut [f32], w: &Layer, cache: &mut [HeadCache], pos: usize, theta: f32, eps: f32) {
+    let x = rms_norm(h, &w.input_layernorm, eps);
+    let attn = attention(
+        &x, &w.q_proj, &w.k_proj, &w.v_proj, &w.o_proj, &w.q_norm, &w.k_norm, cache, pos, theta,
+        eps,
+    );
+    for (h, &d) in h.iter_mut().zip(&attn) {
+        *h += d;
+    }
+    let x = rms_norm(h, &w.post_attention_layernorm, eps);
+    let m = mlp(&x, &w.gate_proj, &w.up_proj, &w.down_proj);
+    for (h, &d) in h.iter_mut().zip(&m) {
+        *h += d;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +310,26 @@ mod tests {
         assert_eq!(out, [5.0, 6.0]);
         assert_eq!(cache[0].keys, rope(&[1.0, 1.0], 1, 1000000.0));
         assert_eq!(cache[0].values, [5.0, 6.0]);
+    }
+
+    #[test]
+    fn layer_feeds_the_updated_stream_to_the_mlp() {
+        let w = Layer {
+            input_layernorm: vec![1.0, 1.0],
+            q_proj: vec![1.0, 0.0, 1.0, 0.0],
+            k_proj: vec![8.0, 0.0, 8.0, 0.0],
+            v_proj: vec![-17.0, 0.0, 1.0, 0.0],
+            o_proj: vec![1.0, 0.0, 0.0, 1.0],
+            q_norm: vec![1.0, 1.0],
+            k_norm: vec![1.0, 1.0],
+            post_attention_layernorm: vec![1.0, 2.0],
+            gate_proj: vec![-50.0, 0.0, 0.0, 50.0],
+            up_proj: vec![-1.0, 0.0, 0.0, 1.0],
+            down_proj: vec![1.0, 0.0, 0.0, 1.0],
+        };
+        let mut cache = vec![HeadCache::default()];
+        let mut h = vec![8.0, 8.0];
+        layer(&mut h, &w, &mut cache, 0, 1000000.0, 0.0);
+        assert_eq!(h, [41.0, 209.0]);
     }
 }
